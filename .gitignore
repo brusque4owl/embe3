@@ -1,0 +1,8 @@
+app/app
+tags
+*.o*
+*.sh
+*.ko*
+*.mod*
+*.order
+*.symvers
