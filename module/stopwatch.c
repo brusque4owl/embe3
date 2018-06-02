@@ -179,7 +179,7 @@ ssize_t dev_driver_write(struct file *inode, const char *gdata, size_t length, l
 	add_timer(&mydata.timer);
 	// End of setting timer
 
-	// Start of interrupt
+	// Start of interrupt - make the process sleep on
 	if(interruptCount==0){
 		printk("sleep on\n");
 		interruptible_sleep_on(&wq_write);
@@ -221,14 +221,6 @@ int __init dev_driver_init(void)
 		return result;
 	printk(KERN_ALERT "Init Module Success \n");
 	printk(KERN_ALERT "Device : %s, Major Num : %d \n", DEV_DRIVER_NAME, DEV_DRIVER_MAJOR);
-	/*
-	result = register_chrdev(DEV_DRIVER_MAJOR, DEV_DRIVER_NAME, &dev_driver_fops);
-	if(result <0) {
-		printk( "error %d\n",result);
-		return result;
-	}
-    printk( "dev_file : /dev/%s , major : %d\n", DEV_DRIVER_NAME, DEV_DRIVER_MAJOR);
-	*/
 	// Mapping fpga_fnd physical mem to kernel
 	iom_fpga_fnd_addr = ioremap(IOM_FND_ADDRESS, 0x4);
 
