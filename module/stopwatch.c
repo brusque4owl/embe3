@@ -33,6 +33,7 @@ static int result;
 static dev_t inter_dev;
 static struct cdev inter_cdev;
 bool check_for_3sec=false;	// vol- key falling : true
+bool flag_start=false, flag_pause=false, flag_reset=false;
 
 irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg);
 irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg);
@@ -67,10 +68,29 @@ struct struct_mydata {
 struct struct_mydata stopwatch;	// struct var for stopwatch timer
 struct struct_mydata exit_stop;	// struct var for exit timer
 
+// struct for showing stopwatch value
+struct fnd_time{
+	char sec[2];
+	char min[2];
+};
+static struct fnd_time fnd_time={0,0,0,0};
+
 // Interrupt handlers for 4 keys
 // START KEY
 irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "HOME KEY = %x\n", gpio_get_value(IMX_GPIO_NR(1, 11)));
+
+	flag_start = true;
+	// pause와 reset flag 풀어주기
+	if(flag_pause==true)
+		flag_pause = false;
+	if(flag_reset==true)
+		flag_reset = false;
+
+	printk("start = %d\n", flag_start);
+	printk("pause = %d\n", flag_pause);
+	printk("reset = %d\n", flag_reset);
+
 
 	// Start of Setting timer - don't insert anything in it.
 	stopwatch.count = 0;
@@ -90,20 +110,53 @@ irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 // PAUSE KEY
 irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "BACK KEY = %x\n", gpio_get_value(IMX_GPIO_NR(1, 12)));
+
+	// reset된 상태에서는 pause눌러도 반응 없게하기
+	if(flag_reset==true) return IRQ_HANDLED;
+
+	flag_pause = !flag_pause;
+
+	printk("start = %d\n", flag_start);
+	printk("pause = %d\n", flag_pause);
+	printk("reset = %d\n", flag_reset);	
+	
+	if(flag_pause==false){
+		del_timer_sync(&stopwatch.timer);
+
+		stopwatch.timer.expires=get_jiffies_64()+(1*HZ);
+		stopwatch.timer.data = (unsigned long)&stopwatch;
+		stopwatch.timer.function	= kernel_timer_blink;
+
+		add_timer(&stopwatch.timer);
+	}
 	return IRQ_HANDLED;
 }
+
 // RESET KEY
 irqreturn_t inter_handler_volup(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "VOLUP = %x\n", gpio_get_value(IMX_GPIO_NR(2, 15)));
+	flag_reset = true;	// It may be turned to false in the timer
+
+	printk("start = %d\n", flag_start);
+	printk("pause = %d\n", flag_pause);
+	printk("reset = %d\n", flag_reset);
+
+
+	fnd_time.sec[0]=fnd_time.sec[1]=0;
+	fnd_time.min[0]=fnd_time.min[1]=0;
+
+	// Init the fnd module
+	outw(0, (unsigned int)iom_fpga_fnd_addr);
+
 	return IRQ_HANDLED;
 }
+
 // EXIT KEY
 irqreturn_t inter_handler_voldown(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "VOLDOWN = %x\n", gpio_get_value(IMX_GPIO_NR(5, 14)));
-	// Wake up the process which slept on when write was called
 	// Start of Setting exit timer - don't insert anything in it.
 	check_for_3sec=!check_for_3sec;
-	exit_stop.count = 0;
+	exit_stop.count = 1;
 
 	del_timer_sync(&exit_stop.timer);
 
@@ -176,17 +229,40 @@ static void kernel_timer_blink(unsigned long timeout) {
 	// Variables for FND module
 	unsigned short fnd_value_short = 0;
 
-	// Check for terminating timer
 	p_data->count++;
-	if( p_data->count > 3 ) {
+	printk("stopwatch_count %d\n", p_data->count);
+
+	// Check for terminating timer
+	if(flag_pause==true){
+		// turn to false when pause or start button is pushed.
+		return;
+	}
+	if(flag_reset==true){
 		// Init the fnd module
 		fnd_value_short = 0;
 		outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
+		// Do not re-register timer
 		return;
 	}
-	printk("stopwatch_count %d\n", p_data->count);
 
 	// Write to fnd device
+	fnd_time.sec[1]++;
+	if(fnd_time.sec[1]>=10){
+		fnd_time.sec[1]=0;
+		fnd_time.sec[0]++;
+		if(fnd_time.sec[0]>=6){
+			fnd_time.sec[0]=0;
+			fnd_time.min[1]++;
+			if(fnd_time.min[1]>=10){
+				fnd_time.min[1]=0;
+				fnd_time.min[0]++;
+				if(fnd_time.min[0]>=6){
+					fnd_time.min[0]=0;
+				}
+			}
+		}
+	}
+	fnd_value_short = fnd_time.min[0] << 12 | fnd_time.min[1] << 8 | fnd_time.sec[0] << 4 | fnd_time.sec[1];
 	outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
 	
 	// re-register timer
@@ -210,8 +286,20 @@ static void kernel_timer_exit(unsigned long timeout) {
 		fnd_value_short = 0;
 		outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
 
-		// Init exit condition
+		// Init exit, pause, reset condition
 		check_for_3sec=false;
+		flag_start = false;
+		flag_pause = false;
+		flag_reset = false;
+		
+		// Init fnd_time
+		fnd_time.sec[0] = 0;
+		fnd_time.sec[1] = 0;
+		fnd_time.min[0] = 0;
+		fnd_time.min[1] = 0;
+
+		// Terminate stopwatch timer
+		del_timer_sync(&stopwatch.timer);
 
 		// Wake up the process
 		__wake_up(&wq_write, 1, 1, NULL);
@@ -219,10 +307,6 @@ static void kernel_timer_exit(unsigned long timeout) {
 		return;
 	}
 	printk("exit_count %d\n", p_data->count);
-
-	// Write to fnd device
-	outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
-	
 	// re-register timer
 	exit_stop.timer.expires=get_jiffies_64()+(1*HZ);
 	exit_stop.timer.data = (unsigned long)&exit_stop;
