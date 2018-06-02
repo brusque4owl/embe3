@@ -32,11 +32,14 @@ static int inter_major = DEV_DRIVER_MAJOR, inter_minor = 0;
 static int result;
 static dev_t inter_dev;
 static struct cdev inter_cdev;
+bool check_for_3sec=false;	// vol- key falling : true
 
 irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg);
 irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg);
 irqreturn_t inter_handler_volup(int irq, void* dev_id, struct pt_regs *reg);
 irqreturn_t inter_handler_voldown(int irq, void* dev_id, struct pt_regs *reg);
+static void kernel_timer_exit(unsigned long timeout);
+static void kernel_timer_blink(unsigned long timeout);
 
 int interruptCount = 0;
 
@@ -61,27 +64,59 @@ struct struct_mydata {
 	struct timer_list timer;
 	int count;
 };
-struct struct_mydata mydata;	// struct var for timer
+struct struct_mydata stopwatch;	// struct var for stopwatch timer
+struct struct_mydata exit_stop;	// struct var for exit timer
 
+// Interrupt handlers for 4 keys
+// START KEY
 irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "HOME KEY = %x\n", gpio_get_value(IMX_GPIO_NR(1, 11)));
-	if(++interruptCount>=5) {
-		interruptCount=0;
-		__wake_up(&wq_write, 1, 1, NULL);
-		printk("wake up\n");
-	}
+
+	// Start of Setting timer - don't insert anything in it.
+	stopwatch.count = 0;
+
+	// 다시 home key누르면 기존 timer 제거한 뒤 timer 재등록
+	del_timer_sync(&stopwatch.timer);
+
+	stopwatch.timer.expires=get_jiffies_64()+(1*HZ);
+	stopwatch.timer.data = (unsigned long)&stopwatch;
+	stopwatch.timer.function	= kernel_timer_blink;
+
+	add_timer(&stopwatch.timer);
+	// End of setting timer
+
 	return IRQ_HANDLED;
 }
+// PAUSE KEY
 irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "BACK KEY = %x\n", gpio_get_value(IMX_GPIO_NR(1, 12)));
 	return IRQ_HANDLED;
 }
+// RESET KEY
 irqreturn_t inter_handler_volup(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "VOLUP = %x\n", gpio_get_value(IMX_GPIO_NR(2, 15)));
 	return IRQ_HANDLED;
 }
+// EXIT KEY
 irqreturn_t inter_handler_voldown(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "VOLDOWN = %x\n", gpio_get_value(IMX_GPIO_NR(5, 14)));
+	// Wake up the process which slept on when write was called
+	// Start of Setting exit timer - don't insert anything in it.
+	check_for_3sec=!check_for_3sec;
+	exit_stop.count = 0;
+
+	del_timer_sync(&exit_stop.timer);
+
+	if(check_for_3sec==true){
+		exit_stop.timer.expires=get_jiffies_64()+(1*HZ);
+		exit_stop.timer.data = (unsigned long)&exit_stop;
+		exit_stop.timer.function	= kernel_timer_exit;
+
+		add_timer(&exit_stop.timer);
+	}
+	// End of setting timer
+
+	interruptCount=0;
 	return IRQ_HANDLED;
 }
 
@@ -130,7 +165,7 @@ int dev_driver_open(struct inode *minode, struct file *mfile) {
 	gpio_direction_input(IMX_GPIO_NR(5,14));
 	irq = gpio_to_irq(IMX_GPIO_NR(5,14));
 	printk(KERN_ALERT "IRQ Number : %d\n", irq);
-	ret = request_irq(irq, inter_handler_voldown, IRQF_TRIGGER_FALLING, "voldown", 0);
+	ret = request_irq(irq, inter_handler_voldown, IRQF_TRIGGER_FALLING|IRQF_TRIGGER_RISING, "voldown", 0);
 
 	return 0;
 }
@@ -143,41 +178,61 @@ static void kernel_timer_blink(unsigned long timeout) {
 
 	// Check for terminating timer
 	p_data->count++;
-	if( p_data->count > 15 ) {
+	if( p_data->count > 3 ) {
 		// Init the fnd module
 		fnd_value_short = 0;
 		outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
 		return;
 	}
-	printk("Executed kernel_timer_count %d\n", p_data->count);
+	printk("stopwatch_count %d\n", p_data->count);
 
 	// Write to fnd device
 	outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
 	
 	// re-register timer
-	mydata.timer.expires=get_jiffies_64()+(1*HZ);
-	mydata.timer.data = (unsigned long)&mydata;
-	mydata.timer.function	= kernel_timer_blink;
+	stopwatch.timer.expires=get_jiffies_64()+(1*HZ);
+	stopwatch.timer.data = (unsigned long)&stopwatch;
+	stopwatch.timer.function	= kernel_timer_blink;
 
-	add_timer(&mydata.timer);
+	add_timer(&stopwatch.timer);
+}
+
+static void kernel_timer_exit(unsigned long timeout) {
+	//int i;
+	struct struct_mydata *p_data = (struct struct_mydata*)timeout;
+	// Variables for FND module
+	unsigned short fnd_value_short = 0;
+
+	// Check for terminating timer
+	p_data->count++;
+	if( p_data->count > 3 ) {
+		// Init the fnd module
+		fnd_value_short = 0;
+		outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
+
+		// Init exit condition
+		check_for_3sec=false;
+
+		// Wake up the process
+		__wake_up(&wq_write, 1, 1, NULL);
+		printk("wake up\n");
+		return;
+	}
+	printk("exit_count %d\n", p_data->count);
+
+	// Write to fnd device
+	outw(fnd_value_short, (unsigned int)iom_fpga_fnd_addr);
+	
+	// re-register timer
+	exit_stop.timer.expires=get_jiffies_64()+(1*HZ);
+	exit_stop.timer.data = (unsigned long)&exit_stop;
+	exit_stop.timer.function	= kernel_timer_exit;
+
+	add_timer(&exit_stop.timer);
 }
 
 ssize_t dev_driver_write(struct file *inode, const char *gdata, size_t length, loff_t *off_what) {
 	//int i;
-
-	printk("dev_driver_write\n");
-
-	// Start of Setting timer - don't insert anything in it.
-	mydata.count = 0;
-
-	del_timer_sync(&mydata.timer);
-
-	mydata.timer.expires=get_jiffies_64()+(1*HZ);
-	mydata.timer.data = (unsigned long)&mydata;
-	mydata.timer.function	= kernel_timer_blink;
-
-	add_timer(&mydata.timer);
-	// End of setting timer
 
 	// Start of interrupt - make the process sleep on
 	if(interruptCount==0){
@@ -185,6 +240,8 @@ ssize_t dev_driver_write(struct file *inode, const char *gdata, size_t length, l
 		interruptible_sleep_on(&wq_write);
 	}
 	// End of interrupt
+
+	printk("dev_driver_write\n");
 	return 0;
 }
 
@@ -224,8 +281,9 @@ int __init dev_driver_init(void)
 	// Mapping fpga_fnd physical mem to kernel
 	iom_fpga_fnd_addr = ioremap(IOM_FND_ADDRESS, 0x4);
 
-	// Initialize timer
-	init_timer(&(mydata.timer));
+	// Initialize stopwatch & exit timer
+	init_timer(&(stopwatch.timer));
+	init_timer(&(exit_stop.timer));
 
 	return 0;
 }
@@ -234,7 +292,8 @@ void __exit dev_driver_exit(void)
 {
 	printk("dev_driver_exit\n");
 	dev_driver_usage = 0;
-	del_timer_sync(&mydata.timer);
+	del_timer_sync(&stopwatch.timer);
+	del_timer_sync(&exit_stop.timer);
 
 	// Unmappingg fpga_fnd physical mem from kernel
 	iounmap(iom_fpga_fnd_addr);
