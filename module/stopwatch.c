@@ -79,8 +79,11 @@ static struct fnd_time fnd_time={0,0,0,0};
 // START KEY
 irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "HOME KEY = %x\n", gpio_get_value(IMX_GPIO_NR(1, 11)));
+	// Prevent start key while stopwatch is going on
+	if(flag_start==true && 
+		flag_pause==false && flag_reset==false)
+		return IRQ_HANDLED;
 
-	flag_start = true;
 	// pause와 reset flag 풀어주기
 	if(flag_pause==true)
 		flag_pause = false;
@@ -105,6 +108,7 @@ irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 	add_timer(&stopwatch.timer);
 	// End of setting timer
 
+	flag_start = true;
 	return IRQ_HANDLED;
 }
 // PAUSE KEY
