@@ -90,11 +90,6 @@ irqreturn_t inter_handler_home(int irq, void* dev_id, struct pt_regs *reg){
 	if(flag_reset==true)
 		flag_reset = false;
 
-	printk("start = %d\n", flag_start);
-	printk("pause = %d\n", flag_pause);
-	printk("reset = %d\n", flag_reset);
-
-
 	// Start of Setting timer - don't insert anything in it.
 	stopwatch.count = 0;
 
@@ -120,10 +115,6 @@ irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg){
 
 	flag_pause = !flag_pause;
 
-	printk("start = %d\n", flag_start);
-	printk("pause = %d\n", flag_pause);
-	printk("reset = %d\n", flag_reset);	
-	
 	if(flag_pause==false){
 		del_timer_sync(&stopwatch.timer);
 
@@ -140,11 +131,6 @@ irqreturn_t inter_handler_back(int irq, void* dev_id, struct pt_regs *reg){
 irqreturn_t inter_handler_volup(int irq, void* dev_id, struct pt_regs *reg){
 	printk(KERN_ALERT "VOLUP = %x\n", gpio_get_value(IMX_GPIO_NR(2, 15)));
 	flag_reset = true;	// It may be turned to false in the timer
-
-	printk("start = %d\n", flag_start);
-	printk("pause = %d\n", flag_pause);
-	printk("reset = %d\n", flag_reset);
-
 
 	fnd_time.sec[0]=fnd_time.sec[1]=0;
 	fnd_time.min[0]=fnd_time.min[1]=0;
@@ -234,7 +220,6 @@ static void kernel_timer_blink(unsigned long timeout) {
 	unsigned short fnd_value_short = 0;
 
 	p_data->count++;
-	printk("stopwatch_count %d\n", p_data->count);
 
 	// Check for terminating timer
 	if(flag_pause==true){
@@ -310,7 +295,6 @@ static void kernel_timer_exit(unsigned long timeout) {
 		printk("wake up\n");
 		return;
 	}
-	printk("exit_count %d\n", p_data->count);
 	// re-register timer
 	exit_stop.timer.expires=get_jiffies_64()+(1*HZ);
 	exit_stop.timer.data = (unsigned long)&exit_stop;
